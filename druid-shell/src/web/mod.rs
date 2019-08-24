@@ -48,34 +48,6 @@ pub struct WindowBuilder {
     title: String,
     cursor: Cursor,
     menu: Option<Menu>,
-    present_strategy: PresentStrategy,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-/// It's very tricky to get smooth dynamics (especially resizing) and
-/// good performance on Windows. This setting lets clients experiment
-/// with different strategies.
-pub enum PresentStrategy {
-    /// Don't try to use DXGI at all, only create Hwnd render targets.
-    /// Note: on Windows 7 this is the only mode available.
-    Hwnd,
-
-    /// Corresponds to the swap effect DXGI_SWAP_EFFECT_SEQUENTIAL. In
-    /// testing, it causes diagonal banding artifacts with Nvidia
-    /// adapters, and incremental present doesn't work. However, it
-    /// is compatible with GDI (such as menus).
-    Sequential,
-
-    /// Corresponds to the swap effect DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL.
-    /// In testing, it seems to perform well (including allowing smooth
-    /// resizing when the frame can be rendered quickly), but isn't
-    /// compatible with GDI.
-    Flip,
-
-    /// Corresponds to the swap effect DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL
-    /// but with a redirection surface for GDI compatibility. Resize is
-    /// very laggy and artifacty.
-    FlipRedirect,
 }
 
 #[derive(Clone, Default)]
@@ -113,22 +85,13 @@ struct WindowState {
     canvas_ctx: RefCell<web_sys::CanvasRenderingContext2d>,
 }
 
-impl Default for PresentStrategy {
-    fn default() -> PresentStrategy {
-        // We probably want to change this, but we need GDI to work. Too bad about
-        // the artifacty resizing.
-        PresentStrategy::FlipRedirect
-    }
-}
-
 impl WindowState {
     // Renders but does not present.
     fn render(&self) -> bool {
         let window = window();
         let ref mut canvas_ctx = *self.canvas_ctx.borrow_mut();
         canvas_ctx.clear_rect(0.0, 0.0, self.get_width() as f64, self.get_height() as f64);
-        let mut piet_ctx = piet_common::Piet::new(
-            canvas_ctx, &window);
+        let mut piet_ctx = piet_common::Piet::new(canvas_ctx, &window);
         let want_anim_frame = self.handler.paint(&mut piet_ctx);
         if let Err(e) = piet_ctx.finish() {
             // TODO: use proper log infrastructure
@@ -157,65 +120,89 @@ impl WindowState {
     }
 }
 
+fn setup_mouse_down_callback(window_state: &Rc<WindowState>) {
+    let state = window_state.clone();
+    let closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
+        let button = mouse_button(event.button()).unwrap();
+        let dpr = state.dpr.get();
+        let event = MouseEvent {
+            x: (dpr * event.offset_x() as f64) as i32,
+            y: (dpr * event.offset_y() as f64) as i32,
+            mods: 0,
+            which: button,
+            ty: MouseType::Down,
+        };
+        state.handler.mouse(&event);
+    }) as Box<dyn FnMut(_)>);
+    window_state.canvas
+        .add_event_listener_with_callback("mousedown", closure.as_ref().unchecked_ref())
+        .unwrap();
+    closure.forget();
+}
+
+fn setup_mouse_move_callback(window_state: &Rc<WindowState>) {
+    let state = window_state.clone();
+    let closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
+        let dpr = state.dpr.get();
+        let x = (dpr * event.offset_x() as f64) as i32;
+	let y = (dpr * event.offset_y() as f64) as i32;
+	let mods = 0;
+	state.handler.mouse_move(x, y, mods);
+    }) as Box<dyn FnMut(_)>);
+    window_state.canvas
+        .add_event_listener_with_callback("mousemove", closure.as_ref().unchecked_ref())
+        .unwrap();
+    closure.forget();
+}
+
+fn setup_mouse_up_callback(window_state: &Rc<WindowState>) {
+    let state = window_state.clone();
+    let closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
+        let button = mouse_button(event.button()).unwrap();
+        let dpr = state.dpr.get();
+        let event = MouseEvent {
+            x: (dpr * event.offset_x() as f64) as i32,
+            y: (dpr * event.offset_y() as f64) as i32,
+            mods: 0,
+            which: button,
+            ty: MouseType::Up,
+        };
+        state.handler.mouse(&event);
+    }) as Box<dyn FnMut(_)>);
+    window_state.canvas
+        .add_event_listener_with_callback("mouseup", closure.as_ref().unchecked_ref()).unwrap();
+    closure.forget();
+}
+
+fn setup_resize_callback(window_state: &Rc<WindowState>) {
+    let state = window_state.clone();
+    let closure = Closure::wrap(Box::new(move |_: web_sys::UiEvent| {
+        let dpr = state.dpr.get();
+        let (css_width, css_height) = get_window_size();
+        let physical_width = (dpr * css_width) as u32;
+        let physical_height = (dpr * css_height) as u32;
+        state.canvas.set_width(physical_width);
+        state.canvas.set_height(physical_height);
+        state.handler.size(physical_width, physical_height);
+        state.render(); // TODO: this seems a bit mad
+    }) as Box<dyn FnMut(_)>);
+    window()
+        .add_event_listener_with_callback("resize", closure.as_ref().unchecked_ref())
+        .unwrap();
+    closure.forget();
+}
 fn setup_web_callbacks(window_state: &Rc<WindowState>) {
-    {
-        let state = window_state.clone();
-        let closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
-            let button = match event.button() {
-                0 => MouseButton::Left,
-                1 => MouseButton::Middle,
-                2 => MouseButton::Right,
-                _ => { return; },
-            };
+    setup_mouse_down_callback(window_state);
+    setup_mouse_move_callback(window_state);
+    setup_mouse_up_callback(window_state);
+    setup_resize_callback(window_state);
+}
 
-            let event = MouseEvent {
-                x: event.offset_x() as i32,
-                y: event.offset_y() as i32,
-                mods: 0,
-                which: button,
-                ty: MouseType::Down,
-            };
-            state.handler.mouse(&event);
-        }) as Box<dyn FnMut(_)>);
-        window_state.canvas
-            .add_event_listener_with_callback("mousedown", closure.as_ref().unchecked_ref()).unwrap();
-        closure.forget();
-    }
-    {
-        let state = window_state.clone();
-        let closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
-            let x = event.offset_x() as i32;
-	    let y = event.offset_y() as i32;
-	    let mods = 0;
-	    state.handler.mouse_move(x, y, mods);
-        }) as Box<dyn FnMut(_)>);
-        window_state.canvas
-            .add_event_listener_with_callback("mousemove", closure.as_ref().unchecked_ref()).unwrap();
-        closure.forget();
-    }
-    {
-        let state = window_state.clone();
-        let closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
-            let button = match event.button() {
-                0 => MouseButton::Left,
-                1 => MouseButton::Middle,
-                2 => MouseButton::Right,
-                _ => { return; },
-            };
-
-            let event = MouseEvent {
-                x: event.offset_x() as i32,
-                y: event.offset_y() as i32,
-                mods: 0,
-                which: button,
-                ty: MouseType::Up,
-            };
-            state.handler.mouse(&event);
-        }) as Box<dyn FnMut(_)>);
-        window_state.canvas
-            .add_event_listener_with_callback("mouseup", closure.as_ref().unchecked_ref()).unwrap();
-        closure.forget();
-    }
+/// Returns the window size in css units
+fn get_window_size() -> (f64, f64) {
+    let width = window().inner_width().unwrap().as_f64().unwrap();
+    let height = window().inner_height().unwrap().as_f64().unwrap();
+    (width, height)
 }
 
 impl WindowBuilder {
@@ -225,7 +212,6 @@ impl WindowBuilder {
             title: String::new(),
             cursor: Cursor::Arrow,
             menu: None,
-            present_strategy: Default::default(),
         }
     }
 
@@ -251,10 +237,6 @@ impl WindowBuilder {
         self.menu = Some(menu);
     }
 
-    pub fn set_present_strategy(&mut self, present_strategy: PresentStrategy) {
-        self.present_strategy = present_strategy;
-    }
-
     pub fn build(self) -> Result<WindowHandle, Error> {
         let window = window();
         let canvas = window
@@ -272,15 +254,21 @@ impl WindowBuilder {
             .unwrap();
 
         let dpr = window.device_pixel_ratio();
-        let canvas_w = (canvas.offset_width() as f64 * dpr) as u32;
-        let canvas_h = (canvas.offset_height() as f64 * dpr) as u32;
-        canvas.set_width(canvas_w);
-        canvas.set_height(canvas_h);
-        let _ = context.scale(dpr, dpr);
+        let old_w = canvas.offset_width();
+        let old_h = canvas.offset_height();
+        let new_w = (old_w as f64 * dpr) as u32;
+        let new_h = (old_h as f64 * dpr) as u32;
+
+        // canvas.style().set_property("width", &old_w.to_string()).unwrap();
+        // canvas.style().set_property("height", &old_h.to_string()).unwrap();
+
+        canvas.set_width(new_w);
+        canvas.set_height(new_h);
+        // let _ = context.scale(dpr, dpr);
 
         let handler = self.handler.unwrap();
 
-        handler.size(canvas_w, canvas_h);
+        handler.size(new_w, new_h);
 
         let window = Rc::new(WindowState {
             dpi: Cell::new(96.0),
@@ -406,12 +394,19 @@ impl IdleHandle {
     }
 }
 
-fn window() -> web_sys::Window {
-    web_sys::window().expect("druid_shell web_sys: no global `window` exists")
-}
+fn window() -> web_sys::Window { util::window() }
 
 fn request_animation_frame(f: impl FnOnce() + 'static) {
     window()
         .request_animation_frame(Closure::once_into_js(f).as_ref().unchecked_ref())
         .expect("druid_shell web_sys::Window::request_animation_frame");
+}
+
+fn mouse_button(button: i16) -> Option<MouseButton> {
+    match button {
+        0 => Some(MouseButton::Left),
+        1 => Some(MouseButton::Middle),
+        2 => Some(MouseButton::Right),
+        _ => None
+    }
 }

@@ -40,8 +40,9 @@ js-sys = "0.3.15"
 version = "0.3.15"
 features = [
     "console", "Window", "CanvasGradient", "CanvasRenderingContext2d", "CanvasWindingRule",
-    "Document", "Element", 'EventTarget', "HtmlElement", "HtmlCanvasElement", "ImageBitmap", "ImageData",
-    "MouseEvent", "TextMetrics"
+    "CssStyleDeclaration", "Document", "Element", 'EventTarget', "HtmlElement",
+    "HtmlCanvasElement", "ImageBitmap", "ImageData", "MouseEvent", "TextMetrics",
+    "UiEvent"
 ]
 
 [dev-dependencies]

@@ -13,5 +13,11 @@
 // limitations under the License.
 
 /// Initialize the app.
+use web_sys;
+
 pub fn init() {
+}
+
+pub fn window() -> web_sys::Window {
+    web_sys::window().expect("druid_shell web_sys: no global `window` exists")
 }
