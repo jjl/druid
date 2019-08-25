@@ -80,13 +80,11 @@ struct WindowState {
     dpr: Cell<f64>,
     idle_queue: Arc<Mutex<Vec<Box<IdleCallback>>>>,
     handler: Box<WinHandler>,
-
     canvas: web_sys::HtmlCanvasElement,
     canvas_ctx: RefCell<web_sys::CanvasRenderingContext2d>,
 }
 
 impl WindowState {
-    // Renders but does not present.
     fn render(&self) -> bool {
         let window = window();
         let ref mut canvas_ctx = *self.canvas_ctx.borrow_mut();
@@ -177,10 +175,10 @@ fn setup_mouse_up_callback(window_state: &Rc<WindowState>) {
 fn setup_resize_callback(window_state: &Rc<WindowState>) {
     let state = window_state.clone();
     let closure = Closure::wrap(Box::new(move |_: web_sys::UiEvent| {
-        let dpr = state.dpr.get();
-        let (css_width, css_height) = get_window_size();
+        let (css_width, css_height, dpr) = get_window_size_and_dpr();
         let physical_width = (dpr * css_width) as u32;
         let physical_height = (dpr * css_height) as u32;
+        state.dpr.replace(dpr);
         state.canvas.set_width(physical_width);
         state.canvas.set_height(physical_height);
         state.handler.size(physical_width, physical_height);
@@ -199,10 +197,12 @@ fn setup_web_callbacks(window_state: &Rc<WindowState>) {
 }
 
 /// Returns the window size in css units
-fn get_window_size() -> (f64, f64) {
-    let width = window().inner_width().unwrap().as_f64().unwrap();
-    let height = window().inner_height().unwrap().as_f64().unwrap();
-    (width, height)
+fn get_window_size_and_dpr() -> (f64, f64, f64) {
+    let w = window();
+    let width = w.inner_width().unwrap().as_f64().unwrap();
+    let height = w.inner_height().unwrap().as_f64().unwrap();
+    let dpr = w.device_pixel_ratio();
+    (width, height, dpr)
 }
 
 impl WindowBuilder {
